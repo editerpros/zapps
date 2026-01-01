@@ -1,0 +1,62 @@
+{
+  "name": "zapps",
+  "version": "1.0.0",
+  "description": "Zapps Runtime – ZIP-powered app platform",
+  "main": "src/main.js",
+  "author": "Zapps",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/editerpros/zapps"
+  },
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "publish": "electron-builder --publish always"
+  },
+  "devDependencies": {
+    "electron": "^30.5.1",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0",
+    "fs-extra": "^11.2.0",
+    "unzipper": "^0.10.14"
+  },
+  "build": {
+    "appId": "com.zapps.runtime",
+    "productName": "Zapps",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "ui/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "assets/zapps.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "fileAssociations": [
+      {
+        "ext": "zapp",
+        "name": "Zapps Application"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "editerpros",
+        "repo": "zapps"
+      }
+    ]
+  }
+}

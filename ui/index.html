@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Zapps</title>
+<style>
+body{
+  margin:0;
+  height:100vh;
+  background:#0d1117;
+  color:#e6edf3;
+  font-family:system-ui;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+}
+button{
+  padding:14px 30px;
+  border:none;
+  border-radius:12px;
+  font-size:16px;
+  font-weight:700;
+  background:#22c55e;
+  cursor:pointer;
+}
+#updateBox{width:300px;margin-top:20px;display:none}
+#barWrap{height:8px;background:#333;border-radius:6px;margin-top:6px}
+#bar{height:100%;width:0%;background:#22c55e;border-radius:6px}
+</style>
+</head>
+<body>
+
+<h1>⚡ Zapps</h1>
+<p>ZIP-powered applications</p>
+
+<button onclick="Zapps.openZapp()">Open Zapp</button>
+
+<div id="updateBox">
+  <div id="status"></div>
+  <div id="barWrap"><div id="bar"></div></div>
+  <button id="restart" style="display:none;margin-top:10px">Restart to Update</button>
+</div>
+
+<script>
+const box = document.getElementById("updateBox");
+const status = document.getElementById("status");
+const bar = document.getElementById("bar");
+const restart = document.getElementById("restart");
+
+Zapps.onUpdateStatus(t=>{
+  box.style.display="block";
+  status.textContent=t;
+  if(t.includes("ready")) restart.style.display="block";
+});
+
+Zapps.onUpdateProgress(p=>{
+  box.style.display="block";
+  bar.style.width=p+"%";
+});
+
+restart.onclick=()=>Zapps.restartToUpdate();
+</script>
+
+</body>
+</html>
