@@ -1,13 +1,11 @@
-const { app, BrowserWindow, dialog, ipcMain, Notification } = require("electron");
+const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs-extra");
 const unzipper = require("unzipper");
 
-/* ───────── GLOBAL STATE ───────── */
-
-let launcherWindow = null;
-let currentAppId = "default";
+let launcherWindow;
+let currentAppId = null;
 
 /* Windows identity */
 if (process.platform === "win32") {
@@ -15,182 +13,173 @@ if (process.platform === "win32") {
 }
 
 /* Paths */
-const LIB_PATH = () => path.join(app.getPath("userData"), "library.json");
+const USER = () => app.getPath("userData");
+const APPS = () => path.join(USER(), "apps");
+const LIB = () => path.join(USER(), "library.json");
 
-/* ───────── SELF-REPAIR MODE ───────── */
-
-async function selfRepair() {
-  const userData = app.getPath("userData");
-  const library = path.join(userData, "library.json");
-
-  try {
-    if (!fs.existsSync(userData)) fs.ensureDirSync(userData);
-    if (!fs.existsSync(library)) {
-      await fs.writeJson(library, [], { spaces: 2 });
-    }
-
-    const files = fs.readdirSync(userData);
-    for (const f of files) {
-      if (f.endsWith(".json")) {
-        try {
-          await fs.readJson(path.join(userData, f));
-        } catch {
-          await fs.writeJson(path.join(userData, f), {}, { spaces: 2 });
-        }
-      }
-    }
-
-    await fs.remove(path.join(app.getPath("temp"), "zapps_runtime"));
-  } catch (e) {
-    console.error("Self-repair failed:", e);
+/* Init */
+async function initSystem() {
+  await fs.ensureDir(APPS());
+  if (!fs.existsSync(LIB())) {
+    await fs.writeJson(LIB(), [], { spaces: 2 });
   }
 }
 
-/* ───────── LAUNCHER ───────── */
-
-function createLauncher() {
-  launcherWindow = new BrowserWindow({
-    width: 820,
-    height: 520,
-    title: "Zapps",
-    icon: path.join(__dirname, "../assets/zapps.ico"),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true
-    }
-  });
-
-  launcherWindow.loadFile(
-    path.join(__dirname, "../ui/index.html")
-  );
+/* Library */
+async function loadLibrary() {
+  return fs.readJson(LIB());
+}
+async function saveLibrary(data) {
+  await fs.writeJson(LIB(), data, { spaces: 2 });
 }
 
-/* ───────── ZAPP LOADER ───────── */
+/* Install / Update */
+async function installOrUpdateZapp(zappPath) {
+  const probe = path.join(app.getPath("temp"), "zapps_probe");
+  await fs.remove(probe);
+  await fs.ensureDir(probe);
 
-async function openZappFile(zappFile) {
-  const extractDir = path.join(app.getPath("temp"), "zapps_runtime");
-
-  await fs.remove(extractDir);
-  await fs.ensureDir(extractDir);
-
-  await fs.createReadStream(zappFile)
-    .pipe(unzipper.Extract({ path: extractDir }))
+  await fs.createReadStream(zappPath)
+    .pipe(unzipper.Extract({ path: probe }))
     .promise();
 
-  const manifestPath = path.join(extractDir, "zapp.json");
-  if (!fs.existsSync(manifestPath)) {
-    throw new Error("zapp.json not found");
-  }
+  const manifest = await fs.readJson(path.join(probe, "zapp.json"));
+  currentAppId = manifest.id;
 
-  const manifest = await fs.readJson(manifestPath);
-  currentAppId = manifest.id || "unknown_app";
+  const installed = path.join(APPS(), `${manifest.id}.zapp`);
+  await fs.copy(zappPath, installed);
 
-  let iconPath;
-  if (manifest.icon) {
-    const p = path.join(extractDir, manifest.icon);
-    if (fs.existsSync(p)) iconPath = p;
-  }
+  let lib = await loadLibrary();
+  const existing = lib.find(a => a.id === manifest.id);
 
-  /* Save to library */
-  let lib = [];
-  if (fs.existsSync(LIB_PATH())) lib = await fs.readJson(LIB_PATH());
-  if (!lib.find(a => a.id === manifest.id)) {
+  if (existing) {
+    existing.version = manifest.version;
+    existing.name = manifest.name;
+  } else {
     lib.push({
       id: manifest.id,
       name: manifest.name,
       version: manifest.version,
       icon: manifest.icon || null
     });
-    await fs.writeJson(LIB_PATH(), lib, { spaces: 2 });
   }
 
-  if (process.platform === "win32" && manifest.id) {
+  await saveLibrary(lib);
+  return installed;
+}
+
+/* Launch */
+async function launchZapp(zappFile) {
+  const runtime = path.join(app.getPath("temp"), "zapps_runtime");
+  await fs.remove(runtime);
+  await fs.ensureDir(runtime);
+
+  await fs.createReadStream(zappFile)
+    .pipe(unzipper.Extract({ path: runtime }))
+    .promise();
+
+  const manifest = await fs.readJson(path.join(runtime, "zapp.json"));
+  currentAppId = manifest.id;
+
+  if (process.platform === "win32") {
     app.setAppUserModelId(manifest.id);
   }
 
   const win = new BrowserWindow({
     width: manifest.window?.width || 800,
     height: manifest.window?.height || 600,
-    resizable: manifest.window?.resizable ?? true,
-    title: manifest.name || "Zapp",
-    icon: iconPath,
-    webPreferences: {
-      contextIsolation: true
-    }
+    title: manifest.name,
+    icon: manifest.icon ? path.join(runtime, manifest.icon) : undefined
   });
 
-  win.loadFile(path.join(extractDir, manifest.entry));
+  win.loadFile(path.join(runtime, manifest.entry));
 }
 
-/* ───────── IPC API ───────── */
+/* Shortcuts */
+async function createShortcut(appId, name) {
+  const exe = process.execPath;
+  const zapp = path.join(APPS(), `${appId}.zapp`);
 
+  await shell.writeShortcutLink(
+    path.join(app.getPath("desktop"), `${name}.lnk`),
+    { target: exe, args: `"${zapp}"` }
+  );
+
+  await shell.writeShortcutLink(
+    path.join(app.getPath("appData"),
+      "Microsoft/Windows/Start Menu/Programs",
+      `${name}.lnk`
+    ),
+    { target: exe, args: `"${zapp}"` }
+  );
+}
+
+/* Uninstall */
+async function uninstallApp(id) {
+  await fs.remove(path.join(APPS(), `${id}.zapp`));
+  let lib = await loadLibrary();
+  lib = lib.filter(a => a.id !== id);
+  await saveLibrary(lib);
+}
+
+/* IPC */
 ipcMain.handle("zapps:open", async () => {
   const r = await dialog.showOpenDialog({
-    filters: [{ name: "Zapps App", extensions: ["zapp"] }],
-    properties: ["openFile"]
+    filters: [{ name: "Zapp", extensions: ["zapp"] }]
   });
-  if (!r.canceled) await openZappFile(r.filePaths[0]);
+  if (!r.canceled) {
+    const installed = await installOrUpdateZapp(r.filePaths[0]);
+    await launchZapp(installed);
+  }
 });
 
-ipcMain.on("zapps:notify", (_, { title, body }) => {
-  new Notification({ title: title || "Zapps", body: body || "" }).show();
+ipcMain.handle("zapps:launch", async (_, id) => {
+  const zapp = path.join(APPS(), `${id}.zapp`);
+  if (fs.existsSync(zapp)) await launchZapp(zapp);
 });
 
-ipcMain.handle("zapps:storage:get", async (_, key) => {
-  const p = path.join(app.getPath("userData"), `${currentAppId}.json`);
-  if (!fs.existsSync(p)) return null;
-  return (await fs.readJson(p))[key] ?? null;
+ipcMain.handle("zapps:library", loadLibrary);
+ipcMain.handle("zapps:pin", (_, app) => createShortcut(app.id, app.name));
+ipcMain.handle("zapps:uninstall", (_, id) => uninstallApp(id));
+
+/* About */
+ipcMain.handle("zapps:about", () => ({
+  name: "Zapps Runtime",
+  version: app.getVersion(),
+  platform: process.platform,
+  electron: process.versions.electron
+}));
+
+/* Manual update check */
+ipcMain.handle("zapps:checkUpdate", () => {
+  autoUpdater.checkForUpdates();
+  return { status: "checking" };
 });
 
-ipcMain.handle("zapps:storage:set", async (_, { key, value }) => {
-  const p = path.join(app.getPath("userData"), `${currentAppId}.json`);
-  let d = {};
-  if (fs.existsSync(p)) d = await fs.readJson(p);
-  d[key] = value;
-  await fs.writeJson(p, d, { spaces: 2 });
-});
-
-ipcMain.handle("zapps:library", async () => {
-  if (!fs.existsSync(LIB_PATH())) return [];
-  return await fs.readJson(LIB_PATH());
-});
-
-/* ───────── AUTO-UPDATE UI ───────── */
-
-function setupAutoUpdaterUI() {
-  autoUpdater.on("checking-for-update", () =>
-    launcherWindow?.webContents.send("zapps:update:status", "Checking for updates…")
-  );
-
-  autoUpdater.on("update-available", () =>
-    launcherWindow?.webContents.send("zapps:update:status", "Update found. Downloading…")
-  );
-
-  autoUpdater.on("update-not-available", () =>
-    launcherWindow?.webContents.send("zapps:update:status", "Zapps is up to date.")
-  );
-
-  autoUpdater.on("download-progress", p =>
-    launcherWindow?.webContents.send("zapps:update:progress", Math.round(p.percent))
-  );
-
-  autoUpdater.on("update-downloaded", () =>
-    launcherWindow?.webContents.send("zapps:update:status", "Update ready. Restart to apply.")
-  );
+/* Launcher */
+function createLauncher() {
+  launcherWindow = new BrowserWindow({
+    width: 900,
+    height: 600,
+    icon: path.join(__dirname, "../assets/zapps.ico"),
+    webPreferences: {
+      preload: path.join(__dirname, "preload.js")
+    }
+  });
+  launcherWindow.loadFile(path.join(__dirname, "../ui/index.html"));
 }
 
-ipcMain.on("zapps:update:restart", () => {
-  autoUpdater.quitAndInstall();
-});
-
-/* ───────── BOOT ───────── */
-
+/* Boot */
 app.whenReady().then(async () => {
-  await selfRepair();
-  setupAutoUpdaterUI();
-  autoUpdater.checkForUpdates();
+  await initSystem();
 
-  const zappArg = process.argv.find(a => a.endsWith(".zapp"));
-  if (zappArg) openZappFile(zappArg);
-  else createLauncher();
+  const arg = process.argv.find(a => a.endsWith(".zapp"));
+  if (arg) {
+    const installed = await installOrUpdateZapp(arg);
+    await launchZapp(installed);
+  } else {
+    createLauncher();
+  }
+
+  autoUpdater.checkForUpdatesAndNotify();
 });

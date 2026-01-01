@@ -1,6 +1,6 @@
 {
   "name": "zapps",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Zapps Runtime – ZIP-powered app platform",
   "main": "src/main.js",
   "author": "Zapps",
